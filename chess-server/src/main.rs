@@ -177,6 +177,10 @@ impl Board {
 
         Ok(board)
     }
+
+    fn make_move(&mut self, mov: Move) {
+        self.squares.get_mut(mov.from.row);
+    }
 }
 
 impl Default for Board {
@@ -197,7 +201,9 @@ impl Debug for Board {
                     None => f.write_str("  ")?,
                 }
             }
-            f.write_char('\n')?;
+            if r != rows - 1 {
+                f.write_char('\n')?;
+            }
         }
 
         Ok(())
@@ -223,6 +229,5 @@ fn main() {
     // game.get(Square) -> Piece
     // game.status() -> Status
     let board = Board::default();
-    println!("Hello, world!");
     println!("{:#?}", board);
 }
