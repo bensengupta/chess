@@ -1,5 +1,36 @@
 use std::fmt::{Debug, Write};
 
+enum ParseError {
+    InvalidCharacter,
+    InvalidDimensions,
+}
+
+impl Debug for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use ParseError::*;
+        f.write_str(match *self {
+            InvalidCharacter => "invalid character",
+            InvalidDimensions => "invalid dimensions",
+        })
+    }
+}
+
+struct IllegalMoveError;
+
+impl Debug for IllegalMoveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("illegal move")
+    }
+}
+
+struct InvalidPosError;
+
+impl Debug for InvalidPosError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("invalid position")
+    }
+}
+
 // ============================================
 //                  PIECE
 // ============================================
@@ -16,14 +47,13 @@ enum Piece {
 
 impl Debug for Piece {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use Piece::*;
         f.write_char(match *self {
-            King => 'k',
-            Queen => 'q',
-            Bishop => 'b',
-            Knight => 'n',
-            Rook => 'r',
-            Pawn => 'p',
+            Piece::King => 'k',
+            Piece::Queen => 'q',
+            Piece::Bishop => 'b',
+            Piece::Knight => 'n',
+            Piece::Rook => 'r',
+            Piece::Pawn => 'p',
         })
     }
 }
@@ -48,39 +78,39 @@ struct Square {
     color: Color,
 }
 
-impl Debug for Square {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut piece = format!("{:#?}", self.piece);
-        if self.color == Color::White {
-            piece = piece.to_ascii_uppercase()
-        }
-        f.write_str(&piece)
-    }
-}
-
-impl Square {
-    fn parse_fen_placement_char(c: char) -> Result<Self, ()> {
-        let color = if c.is_ascii_uppercase() {
-            Color::White
-        } else {
-            Color::Black
-        };
-
-        match c.to_ascii_lowercase() {
-            'r' => Ok(Square::new(Piece::Rook, color)),
-            'n' => Ok(Square::new(Piece::Knight, color)),
-            'b' => Ok(Square::new(Piece::Bishop, color)),
-            'q' => Ok(Square::new(Piece::Queen, color)),
-            'k' => Ok(Square::new(Piece::King, color)),
-            'p' => Ok(Square::new(Piece::Pawn, color)),
-            _ => Err(()),
-        }
-    }
-}
-
 impl Square {
     fn new(piece: Piece, color: Color) -> Self {
         Self { color, piece }
+    }
+}
+
+impl Square {
+    fn parse_fen_placement_char(c: char) -> Result<Self, ParseError> {
+        let color = match c.is_ascii_uppercase() {
+            true => Color::White,
+            false => Color::Black,
+        };
+
+        let piece = match c.to_ascii_lowercase() {
+            'r' => Piece::Rook,
+            'n' => Piece::Knight,
+            'b' => Piece::Bishop,
+            'q' => Piece::Queen,
+            'k' => Piece::King,
+            'p' => Piece::Pawn,
+            _ => return Err(ParseError::InvalidCharacter),
+        };
+
+        Ok(Self::new(piece, color))
+    }
+}
+
+impl Debug for Square {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.color {
+            Color::White => f.write_str(format!("{:#?}", self.piece).to_uppercase().as_str()),
+            Color::Black => self.piece.fmt(f),
+        }
     }
 }
 
@@ -88,6 +118,7 @@ impl Square {
 //                  BOARD STRUCTS
 // ============================================
 
+#[derive(Clone, Copy)]
 struct Pos {
     row: usize,
     col: usize,
@@ -97,12 +128,37 @@ impl Pos {
     fn new(row: usize, col: usize) -> Self {
         Self { row, col }
     }
+    fn algebraic(s: String) -> Result<Self, InvalidPosError> {
+        let mut chars = s.chars();
+        let row = 7 - "abcdefgh"
+            .find(chars.next().ok_or(InvalidPosError)?)
+            .ok_or(InvalidPosError)?;
+        let col = "12345678"
+            .find(chars.next().ok_or(InvalidPosError)?)
+            .ok_or(InvalidPosError)?;
+
+        Ok(Self { row, col })
+    }
 }
 
 struct Move {
     from: Pos,
     to: Pos,
     promotion: Option<Piece>,
+}
+
+impl Move {
+    fn new(from: Pos, to: Pos) -> Self {
+        Self {
+            from,
+            to,
+            promotion: None,
+        }
+    }
+    fn promote(mut self, piece: Piece) -> Self {
+        self.promotion = Some(piece);
+        self
+    }
 }
 
 enum Status {
@@ -119,6 +175,17 @@ struct Castling {
     black_kingside: bool,
 }
 
+impl Default for Castling {
+    fn default() -> Self {
+        Self {
+            white_queenside: true,
+            white_kingside: true,
+            black_queenside: true,
+            black_kingside: true,
+        }
+    }
+}
+
 // ============================================
 //                  BOARD
 // ============================================
@@ -129,57 +196,65 @@ struct Board {
 
 impl Board {
     fn new(rows: usize, cols: usize) -> Self {
+        if rows == 0 || cols == 0 {
+            panic!("board rows/cols cannot be 0");
+        }
         Self {
             squares: vec![vec![None; cols]; rows],
         }
     }
 
-    fn get(&self, pos: Pos) -> Option<Square> {
-        self.squares[pos.row][pos.col]
+    fn dimensions(&self) -> (usize, usize) {
+        (self.squares.len(), self.squares[0].len())
     }
 
-    fn parse_fen_placement(fen: String) -> Result<Self, ()> {
-        let mut board = Self::new(8, 8);
-        let (rows, cols) = (board.squares.len(), board.squares[0].len());
+    fn parse_fen_placement(fen: String) -> Result<Self, ParseError> {
+        let mut board = Board::new(8, 8);
+        let (rows, cols) = Board::dimensions(&board);
 
         let chars: Vec<Vec<_>> = fen.split('/').map(|line| line.chars().collect()).collect();
 
         // Check rows match
         if chars.len() != rows {
-            return Err(());
+            return Err(ParseError::InvalidDimensions);
         }
 
         for (row, line) in chars.into_iter().enumerate() {
             let mut col = 0;
             for c in line {
                 if col >= cols {
-                    return Err(());
+                    return Err(ParseError::InvalidDimensions);
                 }
-                if c.is_ascii_digit() {
-                    col += c.to_digit(10).unwrap() as usize;
-                    if col > cols {
-                        return Err(());
+                match c {
+                    c if c.is_ascii_digit() => {
+                        col += c.to_digit(10).unwrap() as usize;
                     }
-                    continue;
+                    c => {
+                        board.squares[row][col] = Some(Square::parse_fen_placement_char(c)?);
+                        col += 1;
+                    }
                 }
-                if let Ok(sq) = Square::parse_fen_placement_char(c) {
-                    board.squares[row][col] = Some(sq);
-                    col += 1;
-                    continue;
-                }
-                return Err(());
             }
             // Check columns match
             if col != cols {
-                return Err(());
+                return Err(ParseError::InvalidDimensions);
             }
         }
 
         Ok(board)
     }
 
-    fn make_move(&mut self, mov: Move) {
-        self.squares.get_mut(mov.from.row);
+    fn get(&self, pos: Pos) -> Option<Square> {
+        self.squares[pos.row][pos.col]
+    }
+
+    fn set(&mut self, pos: Pos, sq: Option<Square>) {
+        self.squares[pos.row][pos.col] = sq;
+    }
+
+    fn is_in_bounds(&self, pos: Pos) -> bool {
+        let (rows, cols) = self.dimensions();
+        pos.col < rows && pos.row < cols
     }
 }
 
@@ -193,13 +268,14 @@ impl Default for Board {
 
 impl Debug for Board {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (rows, cols) = (self.squares.len(), self.squares[0].len());
+        let (rows, cols) = self.dimensions();
         for r in 0..rows {
             for c in 0..cols {
                 match &self.squares[r][c] {
-                    Some(sq) => f.write_fmt(format_args!("{:#?} ", sq))?,
-                    None => f.write_str("  ")?,
+                    Some(sq) => sq.fmt(f)?,
+                    None => f.write_char(' ')?,
                 }
+                f.write_char(' ')?;
             }
             if r != rows - 1 {
                 f.write_char('\n')?;
@@ -218,7 +294,33 @@ struct Game {
     board: Board,
     turn: Color,
     castling: Castling,
-    ep_square: Pos,
+    ep_square: Option<Pos>,
+}
+
+impl Default for Game {
+    fn default() -> Self {
+        Self {
+            board: Board::default(),
+            turn: Color::White,
+            castling: Castling::default(),
+            ep_square: None,
+        }
+    }
+}
+
+impl Game {
+    fn make_move(&mut self, mov: Move) -> Result<(), IllegalMoveError> {
+        let board = &mut self.board;
+
+        if !board.is_in_bounds(mov.from) || !board.is_in_bounds(mov.to) {
+            return Err(IllegalMoveError);
+        }
+
+        board.set(mov.to, board.get(mov.from));
+        board.set(mov.from, None);
+
+        Ok(())
+    }
 }
 
 fn main() {
@@ -228,6 +330,14 @@ fn main() {
     // game.move(Square, Square) -> Result<()>
     // game.get(Square) -> Piece
     // game.status() -> Status
-    let board = Board::default();
-    println!("{:#?}", board);
+    let mut game = Game::default();
+
+    game.make_move(Move::new(
+        Pos::algebraic("a1".to_string()).unwrap(),
+        Pos::algebraic("a2".to_string()).unwrap(),
+    ))
+    .unwrap();
+
+    // let board = Board::default();
+    println!("{:#?}", game.board);
 }
