@@ -1,4 +1,8 @@
-use std::fmt::{Debug, Write};
+use std::{
+    fmt::{Debug, Write},
+    ops::Not,
+    str::FromStr,
+};
 
 enum ParseError {
     InvalidCharacter,
@@ -35,7 +39,7 @@ impl Debug for InvalidPosError {
 //                  PIECE
 // ============================================
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Piece {
     King,
     Queen,
@@ -58,6 +62,38 @@ impl Debug for Piece {
     }
 }
 
+impl Piece {
+    #[rustfmt::skip]
+    fn offsets(&self) -> Vec<(i32, i32)> {
+        match *self {
+            Piece::King => vec![(-1, -1), (-1, 0), (-1,  1),
+                                ( 0, -1),          ( 0,  1),
+                                ( 1, -1), ( 1, 0), ( 1,  1)],
+
+            Piece::Queen => vec![(-1, -1), (-1, 0), (-1,  1),
+                                 ( 0, -1),          ( 0,  1),
+                                 ( 1, -1), ( 1, 0), ( 1,  1)],
+                                
+            Piece::Bishop => vec![(-1, -1),         (-1,  1),
+
+                                  ( 1, -1),         ( 1,  1)],
+            
+            Piece::Rook => vec![          (-1, 0),
+                                ( 0, -1),          ( 0,  1),
+                                          ( 1, 0)           ],
+
+            Piece::Knight => vec![          (-2, -1),           (-2,  1),
+                                  (-1, -2),                               (-1,  2),
+                                  
+                                  ( 1, -2),                               ( 1,  2),
+                                            ( 2, -1),           ( 2,  1)],
+
+            Piece::Pawn => vec![(1, 0),
+                                (2, 0)]
+        }
+    }
+}
+
 // ============================================
 //                  COLOR
 // ============================================
@@ -66,6 +102,17 @@ impl Debug for Piece {
 enum Color {
     White,
     Black,
+}
+
+impl Not for Color {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        match self {
+            Color::Black => Color::White,
+            Color::White => Color::Black,
+        }
+    }
 }
 
 // ============================================
@@ -118,26 +165,115 @@ impl Debug for Square {
 //                  BOARD STRUCTS
 // ============================================
 
+#[rustfmt::skip]
 #[derive(Clone, Copy)]
-struct Pos {
-    row: usize,
-    col: usize,
+enum Pos {
+    A8, B8, C8, D8, E8, F8, G8, H8,
+    A7, B7, C7, D7, E7, F7, G7, H7,
+    A6, B6, C6, D6, E6, F6, G6, H6,
+    A5, B5, C5, D5, E5, F5, G5, H5,
+    A4, B4, C4, D4, E4, F4, G4, H4,
+    A3, B3, C3, D3, E3, F3, G3, H3,
+    A2, B2, C2, D2, E2, F2, G2, H2,
+    A1, B1, C1, D1, E1, F1, G1, H1,
+}
+
+impl TryFrom<(usize, usize)> for Pos {
+    type Error = ();
+
+    fn try_from((row, col): (usize, usize)) -> Result<Self, Self::Error> {
+        use Pos::*;
+        let grid = [
+            [A8, B8, C8, D8, E8, F8, G8, H8],
+            [A7, B7, C7, D7, E7, F7, G7, H7],
+            [A6, B6, C6, D6, E6, F6, G6, H6],
+            [A5, B5, C5, D5, E5, F5, G5, H5],
+            [A4, B4, C4, D4, E4, F4, G4, H4],
+            [A3, B3, C3, D3, E3, F3, G3, H3],
+            [A2, B2, C2, D2, E2, F2, G2, H2],
+            [A1, B1, C1, D1, E1, F1, G1, H1],
+        ];
+
+        if row < grid.len() && col < grid[0].len() {
+            Ok(grid[row][col])
+        } else {
+            Err(())
+        }
+    }
+}
+
+impl TryFrom<(i32, i32)> for Pos {
+    type Error = ();
+
+    fn try_from((row, col): (i32, i32)) -> Result<Self, Self::Error> {
+        if row < 0 || col < 0 {
+            Err(())
+        } else {
+            (row as usize, col as usize).try_into()
+        }
+    }
+}
+
+impl From<Pos> for (usize, usize) {
+    fn from(pos: Pos) -> Self {
+        (pos.row(), pos.col())
+    }
+}
+
+impl FromStr for Pos {
+    type Err = ();
+
+    fn from_str(input: &str) -> Result<Pos, Self::Err> {
+        let mut chars = input.chars();
+        let col_char = chars.next().ok_or(())?;
+        let row_char = chars.next().ok_or(())?;
+        let col = "ABCDEFGH".find(col_char).ok_or(())?;
+        let row = "87654321".find(row_char).ok_or(())?;
+
+        (row, col).try_into()
+    }
 }
 
 impl Pos {
-    fn new(row: usize, col: usize) -> Self {
-        Self { row, col }
-    }
-    fn algebraic(s: String) -> Result<Self, InvalidPosError> {
-        let mut chars = s.chars();
-        let row = 7 - "abcdefgh"
-            .find(chars.next().ok_or(InvalidPosError)?)
-            .ok_or(InvalidPosError)?;
-        let col = "12345678"
-            .find(chars.next().ok_or(InvalidPosError)?)
-            .ok_or(InvalidPosError)?;
+    // 1 = Rank 1
+    // 8 = Rank 8
+    fn rank(self, color: Color) -> usize {
+        let (row, _) = self.into();
 
-        Ok(Self { row, col })
+        match color {
+            Color::Black => row + 1,
+            Color::White => 8 - row,
+        }
+    }
+
+    fn row(self) -> usize {
+        use Pos::*;
+
+        match self {
+            A8 | B8 | C8 | D8 | E8 | F8 | G8 | H8 => 0,
+            A7 | B7 | C7 | D7 | E7 | F7 | G7 | H7 => 1,
+            A6 | B6 | C6 | D6 | E6 | F6 | G6 | H6 => 2,
+            A5 | B5 | C5 | D5 | E5 | F5 | G5 | H5 => 3,
+            A4 | B4 | C4 | D4 | E4 | F4 | G4 | H4 => 4,
+            A3 | B3 | C3 | D3 | E3 | F3 | G3 | H3 => 5,
+            A2 | B2 | C2 | D2 | E2 | F2 | G2 | H2 => 6,
+            A1 | B1 | C1 | D1 | E1 | F1 | G1 | H1 => 7,
+        }
+    }
+
+    fn col(self) -> usize {
+        use Pos::*;
+
+        match self {
+            A1 | A2 | A3 | A4 | A5 | A6 | A7 | A8 => 0,
+            B1 | B2 | B3 | B4 | B5 | B6 | B7 | B8 => 0,
+            C1 | C2 | C3 | C4 | C5 | C6 | C7 | C8 => 0,
+            D1 | D2 | D3 | D4 | D5 | D6 | D7 | D8 => 0,
+            E1 | E2 | E3 | E4 | E5 | E6 | E7 | E8 => 0,
+            F1 | F2 | F3 | F4 | F5 | F6 | F7 | F8 => 0,
+            G1 | G2 | G3 | G4 | G5 | G6 | G7 | G8 => 0,
+            H1 | H2 | H3 | H4 | H5 | H6 | H7 | H8 => 0,
+        }
     }
 }
 
@@ -195,10 +331,8 @@ struct Board {
 }
 
 impl Board {
-    fn new(rows: usize, cols: usize) -> Self {
-        if rows == 0 || cols == 0 {
-            panic!("board rows/cols cannot be 0");
-        }
+    fn new() -> Self {
+        let (rows, cols) = (8, 8);
         Self {
             squares: vec![vec![None; cols]; rows],
         }
@@ -209,7 +343,7 @@ impl Board {
     }
 
     fn parse_fen_placement(fen: String) -> Result<Self, ParseError> {
-        let mut board = Board::new(8, 8);
+        let mut board = Board::new();
         let (rows, cols) = Board::dimensions(&board);
 
         let chars: Vec<Vec<_>> = fen.split('/').map(|line| line.chars().collect()).collect();
@@ -245,16 +379,13 @@ impl Board {
     }
 
     fn get(&self, pos: Pos) -> Option<Square> {
-        self.squares[pos.row][pos.col]
+        let (row, col) = pos.into();
+        self.squares[row][col]
     }
 
     fn set(&mut self, pos: Pos, sq: Option<Square>) {
-        self.squares[pos.row][pos.col] = sq;
-    }
-
-    fn is_in_bounds(&self, pos: Pos) -> bool {
-        let (rows, cols) = self.dimensions();
-        pos.col < rows && pos.row < cols
+        let (row, col) = pos.into();
+        self.squares[row][col] = sq;
     }
 }
 
@@ -309,15 +440,72 @@ impl Default for Game {
 }
 
 impl Game {
-    fn make_move(&mut self, mov: Move) -> Result<(), IllegalMoveError> {
-        let board = &mut self.board;
+    fn moves_unchecked(&self, pos: Pos) -> Vec<Move> {
 
-        if !board.is_in_bounds(mov.from) || !board.is_in_bounds(mov.to) {
+        if let Some(sq) = self.board.get(pos) {
+            let mut offsets = Vec::new();
+
+            match sq.piece {
+                Piece::King | Piece::Knight => offsets.extend(sq.piece.offsets().into_iter()),
+                Piece::Bishop | Piece::Rook | Piece::Queen => {
+                    let (r, c) = (pos.row() as i32, pos.col() as i32);
+
+                    for (dr, dc) in sq.piece.offsets().into_iter() {
+                        for i in 1.. {
+                            match Pos::try_from((r + dr * i, c + dc * i)) {
+                                Ok(pos) => {
+                                    offsets.push((r + dr * i, c + dc * i));
+                                    if self.board.get(pos).is_some() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                Piece::Pawn => {
+                    let mut pawn_offsets = sq.piece.offsets();
+                    if sq.color == Color::White {
+                        pawn_offsets.iter_mut().for_each(|(row, col)| { *row *= -1; *col *= -1; })
+                    }
+                    offsets.push(pawn_offsets[0]);
+                    if pos.rank(sq.color) == 2 {
+                        offsets.push(pawn_offsets[1]);
+                    }
+                    if let Some(ep) = self.ep_square {
+
+                    }
+
+                }
+            }
+        }
+
+        vec![]
+    }
+
+    fn make_move(&mut self, mov: Move) -> Result<(), IllegalMoveError> {
+        let mut from = self.board.get(mov.from).ok_or(IllegalMoveError)?;
+
+        // Deny moving enemy pieces
+        if from.color != self.turn {
             return Err(IllegalMoveError);
         }
 
-        board.set(mov.to, board.get(mov.from));
-        board.set(mov.from, None);
+        if from.piece == Piece::Pawn && mov.promotion.is_some() && mov.to.rank(self.turn) != 8 {
+            return Err(IllegalMoveError);
+        }
+
+        if let Some(piece) = mov.promotion {
+            from.piece = piece;
+        }
+
+        self.board.set(mov.to, Some(from));
+        self.board.set(mov.from, None);
+
+        self.turn = !self.turn;
 
         Ok(())
     }
@@ -332,12 +520,9 @@ fn main() {
     // game.status() -> Status
     let mut game = Game::default();
 
-    game.make_move(Move::new(
-        Pos::algebraic("a1".to_string()).unwrap(),
-        Pos::algebraic("a2".to_string()).unwrap(),
-    ))
-    .unwrap();
+    let mov = Move::new(Pos::A1, Pos::A3).promote(Piece::Queen);
 
-    // let board = Board::default();
+    // game.make_move(mov).unwrap();
+
     println!("{:#?}", game.board);
 }
