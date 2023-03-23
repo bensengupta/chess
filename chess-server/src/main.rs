@@ -150,14 +150,19 @@ impl Square {
 
         Ok(Self::new(piece, color))
     }
+
+    fn fen(&self) -> String {
+        let piece = format!("{:#?}", self.piece);
+        match self.color {
+            Color::White => piece.to_uppercase(),
+            Color::Black => piece,
+        }
+    }
 }
 
 impl Debug for Square {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.color {
-            Color::White => f.write_str(format!("{:#?}", self.piece).to_uppercase().as_str()),
-            Color::Black => self.piece.fmt(f),
-        }
+        f.write_str(self.fen().as_str())
     }
 }
 
@@ -166,7 +171,7 @@ impl Debug for Square {
 // ============================================
 
 #[rustfmt::skip]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Pos {
     A8, B8, C8, D8, E8, F8, G8, H8,
     A7, B7, C7, D7, E7, F7, G7, H7,
@@ -246,6 +251,15 @@ impl Pos {
         }
     }
 
+    fn with_offsets(&self, offsets: &Vec<(i32, i32)>) -> Vec<Pos> {
+        let (row, col) = (self.row() as i32, self.col() as i32);
+        offsets
+            .into_iter()
+            .map(|(dr, dc)| Pos::try_from((row + dr, col + dc)))
+            .filter_map(|x| x.ok())
+            .collect()
+    }
+
     fn row(self) -> usize {
         use Pos::*;
 
@@ -277,6 +291,7 @@ impl Pos {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
 struct Move {
     from: Pos,
     to: Pos,
@@ -342,7 +357,7 @@ impl Board {
         (self.squares.len(), self.squares[0].len())
     }
 
-    fn parse_fen_placement(fen: String) -> Result<Self, ParseError> {
+    fn from_fen(fen: String) -> Result<Self, ParseError> {
         let mut board = Board::new();
         let (rows, cols) = Board::dimensions(&board);
 
@@ -378,6 +393,32 @@ impl Board {
         Ok(board)
     }
 
+    fn fen(&self) -> String {
+        let (rows, _) = self.dimensions();
+        let mut fen: Vec<String> = Vec::new();
+
+        for row in self.squares.iter() {
+            for cell in row {
+                if let Some(sq) = cell {
+                    fen.push(sq.fen());
+                    continue;
+                }
+                if let Some(last) = fen.last_mut() {
+                    if let Ok(num) = last.parse::<usize>() {
+                        *last = (num + 1).to_string();
+                        continue;
+                    }
+                }
+                fen.push("1".to_string());
+            }
+            fen.push("/".to_string());
+        }
+
+        fen.pop();
+
+        fen.join("")
+    }
+
     fn get(&self, pos: Pos) -> Option<Square> {
         let (row, col) = pos.into();
         self.squares[row][col]
@@ -393,7 +434,7 @@ impl Default for Board {
     fn default() -> Self {
         let default_placement = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR";
 
-        Self::parse_fen_placement(default_placement.to_string()).unwrap()
+        Self::from_fen(default_placement.to_string()).unwrap()
     }
 }
 
@@ -417,6 +458,20 @@ impl Debug for Board {
     }
 }
 
+struct HistoryItem {
+    mov: Move,
+    fen: String,
+}
+
+impl HistoryItem {
+    fn new(mov: Move, fen: String) -> Self {
+        Self {
+            mov,
+            fen
+        }
+    }
+}
+
 // ============================================
 //                  GAME
 // ============================================
@@ -426,6 +481,7 @@ struct Game {
     turn: Color,
     castling: Castling,
     ep_square: Option<Pos>,
+    history: Vec<HistoryItem>,
 }
 
 impl Default for Game {
@@ -435,6 +491,7 @@ impl Default for Game {
             turn: Color::White,
             castling: Castling::default(),
             ep_square: None,
+            history: Vec::new(),
         }
     }
 }
@@ -444,6 +501,7 @@ impl Game {
 
         if let Some(sq) = self.board.get(pos) {
             let mut offsets = Vec::new();
+            let mut should_promote = false;
 
             match sq.piece {
                 Piece::King | Piece::Knight => offsets.extend(sq.piece.offsets().into_iter()),
@@ -474,12 +532,20 @@ impl Game {
                     offsets.push(pawn_offsets[0]);
                     if pos.rank(sq.color) == 2 {
                         offsets.push(pawn_offsets[1]);
+                    } else if pos.rank(sq.color) == 7 {
+                        should_promote = true;
                     }
                     if let Some(ep) = self.ep_square {
-
+                        todo!("finish pawn ep");
                     }
 
                 }
+            }
+
+            if should_promote {
+                return [Piece::Bishop, Piece::Knight, Piece::Rook, Piece::Queen].into_iter().map(|piece| Move::new(pos, pos.with_offsets(&offsets)[0]).promote(piece)).collect();
+            } else {
+                return pos.with_offsets(&offsets).into_iter().map(|to| Move::new(pos, to)).collect();
             }
         }
 
@@ -487,20 +553,18 @@ impl Game {
     }
 
     fn make_move(&mut self, mov: Move) -> Result<(), IllegalMoveError> {
-        let mut from = self.board.get(mov.from).ok_or(IllegalMoveError)?;
+        if !self.moves_unchecked(mov.from).contains(&mov) {
+            return Err(IllegalMoveError);
+        }
+
+        let from = self.board.get(mov.from).ok_or(IllegalMoveError)?;
 
         // Deny moving enemy pieces
         if from.color != self.turn {
             return Err(IllegalMoveError);
         }
 
-        if from.piece == Piece::Pawn && mov.promotion.is_some() && mov.to.rank(self.turn) != 8 {
-            return Err(IllegalMoveError);
-        }
-
-        if let Some(piece) = mov.promotion {
-            from.piece = piece;
-        }
+        self.history.push(HistoryItem::new(mov, self.board.fen()));
 
         self.board.set(mov.to, Some(from));
         self.board.set(mov.from, None);
