@@ -63,33 +63,46 @@ impl Debug for Piece {
 }
 
 impl Piece {
-    #[rustfmt::skip]
     fn offsets(&self) -> Vec<(i32, i32)> {
         match *self {
-            Piece::King => vec![(-1, -1), (-1, 0), (-1,  1),
-                                ( 0, -1),          ( 0,  1),
-                                ( 1, -1), ( 1, 0), ( 1,  1)],
+            Piece::King => vec![
+                (-1, -1),
+                (-1, 0),
+                (-1, 1),
+                (0, -1),
+                (0, 1),
+                (1, -1),
+                (1, 0),
+                (1, 1),
+            ],
 
-            Piece::Queen => vec![(-1, -1), (-1, 0), (-1,  1),
-                                 ( 0, -1),          ( 0,  1),
-                                 ( 1, -1), ( 1, 0), ( 1,  1)],
-                                
-            Piece::Bishop => vec![(-1, -1),         (-1,  1),
+            Piece::Queen => vec![
+                (-1, -1),
+                (-1, 0),
+                (-1, 1),
+                (0, -1),
+                (0, 1),
+                (1, -1),
+                (1, 0),
+                (1, 1),
+            ],
 
-                                  ( 1, -1),         ( 1,  1)],
-            
-            Piece::Rook => vec![          (-1, 0),
-                                ( 0, -1),          ( 0,  1),
-                                          ( 1, 0)           ],
+            Piece::Bishop => vec![(-1, -1), (-1, 1), (1, -1), (1, 1)],
 
-            Piece::Knight => vec![          (-2, -1),           (-2,  1),
-                                  (-1, -2),                               (-1,  2),
-                                  
-                                  ( 1, -2),                               ( 1,  2),
-                                            ( 2, -1),           ( 2,  1)],
+            Piece::Rook => vec![(-1, 0), (0, -1), (0, 1), (1, 0)],
 
-            Piece::Pawn => vec![(1, 0),
-                                (2, 0)]
+            Piece::Knight => vec![
+                (-2, -1),
+                (-2, 1),
+                (-1, -2),
+                (-1, 2),
+                (1, -2),
+                (1, 2),
+                (2, -1),
+                (2, 1),
+            ],
+
+            Piece::Pawn => vec![(1, 0), (2, 0)],
         }
     }
 }
@@ -251,15 +264,6 @@ impl Pos {
         }
     }
 
-    fn with_offsets(&self, offsets: &Vec<(i32, i32)>) -> Vec<Pos> {
-        let (row, col) = (self.row() as i32, self.col() as i32);
-        offsets
-            .into_iter()
-            .map(|(dr, dc)| Pos::try_from((row + dr, col + dc)))
-            .filter_map(|x| x.ok())
-            .collect()
-    }
-
     fn row(self) -> usize {
         use Pos::*;
 
@@ -309,6 +313,16 @@ impl Move {
     fn promote(mut self, piece: Piece) -> Self {
         self.promotion = Some(piece);
         self
+    }
+    fn from_pos_offsets(pos: Pos, offsets: Vec<(i32, i32)>) -> Vec<Self> {
+        let (row, col) = (pos.row() as i32, pos.col() as i32);
+        offsets
+            .iter()
+            .map(|(dr, dc)| (row + dr, col + dc))
+            .map(Pos::try_from)
+            .filter_map(|res| res.ok())
+            .map(|to| Move::new(pos, to))
+            .collect()
     }
 }
 
@@ -428,6 +442,23 @@ impl Board {
         let (row, col) = pos.into();
         self.squares[row][col] = sq;
     }
+
+    fn get_ray(&self, start: Pos, dir: (i32, i32)) -> Vec<Pos> {
+        let (row, col) = (start.row() as i32, start.col() as i32);
+        (1..)
+            .map_while(|m| Pos::try_from((row + m * dir.0, col + m * dir.1)).ok())
+            .scan(false, |ray_end, pos| {
+                let res = match *ray_end {
+                    true => None,
+                    false => Some(pos),
+                };
+
+                *ray_end = self.get(pos).is_some();
+
+                res
+            })
+            .collect()
+    }
 }
 
 impl Default for Board {
@@ -465,10 +496,7 @@ struct HistoryItem {
 
 impl HistoryItem {
     fn new(mov: Move, fen: String) -> Self {
-        Self {
-            mov,
-            fen
-        }
+        Self { mov, fen }
     }
 }
 
@@ -497,63 +525,78 @@ impl Default for Game {
 }
 
 impl Game {
-    fn moves_unchecked(&self, pos: Pos) -> Vec<Move> {
+    fn moves(&self, pos: Pos) -> Vec<Move> {
+        let cell = self.board.get(pos);
 
-        if let Some(sq) = self.board.get(pos) {
-            let mut offsets = Vec::new();
-            let mut should_promote = false;
-
-            match sq.piece {
-                Piece::King | Piece::Knight => offsets.extend(sq.piece.offsets().into_iter()),
-                Piece::Bishop | Piece::Rook | Piece::Queen => {
-                    let (r, c) = (pos.row() as i32, pos.col() as i32);
-
-                    for (dr, dc) in sq.piece.offsets().into_iter() {
-                        for i in 1.. {
-                            match Pos::try_from((r + dr * i, c + dc * i)) {
-                                Ok(pos) => {
-                                    offsets.push((r + dr * i, c + dc * i));
-                                    if self.board.get(pos).is_some() {
-                                        break;
-                                    }
-                                }
-                                Err(_) => {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                Piece::Pawn => {
-                    let mut pawn_offsets = sq.piece.offsets();
-                    if sq.color == Color::White {
-                        pawn_offsets.iter_mut().for_each(|(row, col)| { *row *= -1; *col *= -1; })
-                    }
-                    offsets.push(pawn_offsets[0]);
-                    if pos.rank(sq.color) == 2 {
-                        offsets.push(pawn_offsets[1]);
-                    } else if pos.rank(sq.color) == 7 {
-                        should_promote = true;
-                    }
-                    if let Some(ep) = self.ep_square {
-                        todo!("finish pawn ep");
-                    }
-
-                }
-            }
-
-            if should_promote {
-                return [Piece::Bishop, Piece::Knight, Piece::Rook, Piece::Queen].into_iter().map(|piece| Move::new(pos, pos.with_offsets(&offsets)[0]).promote(piece)).collect();
-            } else {
-                return pos.with_offsets(&offsets).into_iter().map(|to| Move::new(pos, to)).collect();
-            }
+        // Case 1: Cell is empty
+        if cell.is_none() {
+            return vec![];
         }
 
-        vec![]
+        let sq = cell.unwrap();
+
+        let mut moves = match sq.piece {
+            Piece::Knight => Move::from_pos_offsets(pos, sq.piece.offsets()),
+            Piece::King => Move::from_pos_offsets(pos, sq.piece.offsets()),
+            Piece::Bishop | Piece::Rook | Piece::Queen => sq
+                .piece
+                .offsets()
+                .into_iter()
+                .flat_map(|dir| {
+                    self.board
+                        .get_ray(pos, dir)
+                        .into_iter()
+                        .map(|to| Move::new(pos, to))
+                })
+                .collect(),
+            Piece::Pawn => {
+                let pawn_offsets = sq
+                    .piece
+                    .offsets()
+                    .into_iter()
+                    .map(|(dr, dc)| match sq.color {
+                        Color::White => (-dr, dc),
+                        Color::Black => (dr, dc),
+                    })
+                    .take(if pos.rank(sq.color) == 2 { 2 } else { 1 })
+                    .collect();
+
+                let mut moves = Move::from_pos_offsets(pos, pawn_offsets);
+
+                if let Some(ep) = self.ep_square {
+                    if ep.col() + 1 == pos.col() {
+                        let to = Pos::try_from((moves[0].to.row(), pos.col() + 1)).unwrap();
+                        moves.push(Move::new(pos, to))
+                    }
+                    if ep.col() == pos.col() + 1 {
+                        let to = Pos::try_from((moves[0].to.row(), pos.col() - 1)).unwrap();
+                        moves.push(Move::new(pos, to))
+                    }
+                }
+
+                if pos.rank(sq.color) == 7 {
+                    todo!("pawn promotion");
+                }
+
+                moves
+            }
+        };
+
+        // Discard moves where another piece of the same color is already present
+        moves.retain(|mov| {
+            if let Some(mov_sq) = self.board.get(mov.to) {
+                if mov_sq.color == sq.color {
+                    return false;
+                }
+            }
+            true
+        });
+
+        moves
     }
 
     fn make_move(&mut self, mov: Move) -> Result<(), IllegalMoveError> {
-        if !self.moves_unchecked(mov.from).contains(&mov) {
+        if !self.moves(mov.from).contains(&mov) {
             return Err(IllegalMoveError);
         }
 
